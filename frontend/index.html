@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>Missing Link</title>
+
+<link rel="stylesheet" href="style.css">
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Missing Link System</h1>
+
+<div class="tabs">
+
+<button onclick="show('login')">Login</button>
+<button onclick="show('signup')">Signup</button>
+<button onclick="show('register')">Register Missing</button>
+<button onclick="show('find')">Find Child</button>
+
+</div>
+
+<div id="login" class="card">
+
+<h2>Login</h2>
+
+<input id="lemail" placeholder="Email">
+<input id="lpass" type="password" placeholder="Password">
+
+<button onclick="login()">Login</button>
+
+</div>
+
+
+<div id="signup" class="card">
+
+<h2>Signup</h2>
+
+<input id="sname" placeholder="Username">
+<input id="semail" placeholder="Email">
+<input id="spass" type="password" placeholder="Password">
+
+<button onclick="signup()">Signup</button>
+
+</div>
+
+
+<div id="register" class="card">
+
+<h2>Register Missing Child</h2>
+
+<input id="name" placeholder="Name">
+<input id="location" placeholder="Location">
+<input id="email" placeholder="Contact Email">
+<input id="photo" type="file">
+
+<button onclick="register()">Submit</button>
+
+</div>
+
+
+<div id="find" class="card">
+
+<h2>Find Child</h2>
+
+<input id="foundphoto" type="file">
+
+<button onclick="find()">Search</button>
+
+</div>
+
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>
