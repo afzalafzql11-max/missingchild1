@@ -1,83 +1,229 @@
 from flask import Flask, request, jsonify
-import os
 import sqlite3
-
-from face_matcher import register_face, find_match  # <- updated code
-from enhance_gan import enhance_image  # you can keep this
-from age_gan import age_progression   # keep if you want simulated age progression
-from database import init_db
+import os
+import face_recognition
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
 
 app = Flask(__name__)
 
-# Create required folders
-os.makedirs("uploads/missing", exist_ok=True)
-os.makedirs("uploads/found", exist_ok=True)
-os.makedirs("faces_db", exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Initialize database
-init_db()
+DB = "database.db"
 
 
-@app.route("/register_missing", methods=["POST"])
-def register_missing():
-    name = request.form["name"]
-    location = request.form["location"]
-    email = request.form["email"]
-    image = request.files["image"]
+# ---------------- DATABASE ---------------- #
 
-    path = os.path.join("uploads/missing", image.filename)
-    image.save(path)
+def init_db():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-    # Register face in the face_recognition DB
-    register_face(name, path)
-
-    # Save metadata in SQLite
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO missing(name,location,email,image) VALUES (?,?,?,?)",
-        (name, location, email, path)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        email TEXT,
+        password TEXT
     )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS children(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        age TEXT,
+        place TEXT,
+        photo TEXT,
+        encoding BLOB
+    )
+    """)
+
     conn.commit()
     conn.close()
 
-    return jsonify({"message": "Child registered"})
+init_db()
 
 
-@app.route("/find_child", methods=["POST"])
-def find_child():
-    image = request.files["image"]
-    path = os.path.join("uploads/found", image.filename)
-    image.save(path)
+# ---------------- AGE PROGRESSION ---------------- #
 
-    # Check for direct face match
-    match = find_match(path)
+def age_progression(image_path):
 
-    conn = sqlite3.connect("database.db")
-    c = conn.cursor()
+    img = Image.open(image_path)
 
-    if match:
-        # Delete from DB and return match
-        c.execute("DELETE FROM missing WHERE name=?", (match,))
-        conn.commit()
-        conn.close()
-        return jsonify({"result": "MATCH FOUND", "name": match})
+    # simulate aging
+    img = img.filter(ImageFilter.DETAIL)
 
-    # If no match → enhance / age progression
-    enhanced_path = enhance_image(path)  # optional, if you have enhancement
-    aged_path = age_progression(enhanced_path or path)
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(1.3)
 
-    match_after_age = find_match(aged_path)
-    if match_after_age:
-        c.execute("DELETE FROM missing WHERE name=?", (match_after_age,))
-        conn.commit()
-        conn.close()
-        return jsonify({"result": "MATCH AFTER AGE PROGRESSION", "name": match_after_age})
+    enhancer = ImageEnhance.Sharpness(img)
+    img = enhancer.enhance(1.5)
+
+    aged_path = image_path.replace(".jpg", "_aged.jpg")
+    img.save(aged_path)
+
+    return aged_path
+
+
+# ---------------- SIGNUP ---------------- #
+
+@app.route("/signup", methods=["POST"])
+def signup():
+
+    data = request.json
+
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO users(name,email,password) VALUES(?,?,?)",
+        (data["name"], data["email"], data["password"])
+    )
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Account Created"})
+
+
+# ---------------- LOGIN ---------------- #
+
+@app.route("/login", methods=["POST"])
+def login():
+
+    data = request.json
+
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM users WHERE email=? AND password=?",
+        (data["email"], data["password"])
+    )
+
+    user = cur.fetchone()
 
     conn.close()
-    return jsonify({"result": "NOT FOUND"})
 
+    if user:
+        return jsonify({"status": "success"})
+    else:
+        return jsonify({"status": "fail"})
+
+
+# ---------------- REGISTER CHILD ---------------- #
+
+@app.route("/register_child", methods=["POST"])
+def register_child():
+
+    name = request.form["name"]
+    age = request.form["age"]
+    place = request.form["place"]
+
+    photo = request.files["photo"]
+
+    path = os.path.join(UPLOAD_FOLDER, photo.filename)
+    photo.save(path)
+
+    image = face_recognition.load_image_file(path)
+    encodings = face_recognition.face_encodings(image)
+
+    if len(encodings) == 0:
+        return jsonify({"message": "No face detected"})
+
+    encoding = encodings[0].tobytes()
+
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO children(name,age,place,photo,encoding) VALUES(?,?,?,?,?)",
+        (name, age, place, path, encoding)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Child Registered"})
+
+
+# ---------------- FACE MATCH FUNCTION ---------------- #
+
+def match_face(uploaded_encoding):
+
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute("SELECT name,age,place,encoding FROM children")
+    rows = cur.fetchall()
+
+    for row in rows:
+
+        db_encoding = np.frombuffer(row[3], dtype=np.float64)
+
+        match = face_recognition.compare_faces(
+            [db_encoding], uploaded_encoding
+        )[0]
+
+        if match:
+            conn.close()
+            return {
+                "status": "found",
+                "name": row[0],
+                "age": row[1],
+                "place": row[2]
+            }
+
+    conn.close()
+
+    return None
+
+
+# ---------------- CROSS CHECK ---------------- #
+
+@app.route("/crosscheck", methods=["POST"])
+def crosscheck():
+
+    photo = request.files["photo"]
+
+    path = os.path.join(UPLOAD_FOLDER, photo.filename)
+    photo.save(path)
+
+    image = face_recognition.load_image_file(path)
+    encodings = face_recognition.face_encodings(image)
+
+    if len(encodings) == 0:
+        return jsonify({"status": "no face"})
+
+    uploaded_encoding = encodings[0]
+
+    # First match attempt
+    result = match_face(uploaded_encoding)
+
+    if result:
+        return jsonify(result)
+
+    # Age progression if no match
+    aged_path = age_progression(path)
+
+    aged_image = face_recognition.load_image_file(aged_path)
+    aged_encodings = face_recognition.face_encodings(aged_image)
+
+    if len(aged_encodings) == 0:
+        return jsonify({"status": "not found"})
+
+    aged_encoding = aged_encodings[0]
+
+    result = match_face(aged_encoding)
+
+    if result:
+        return jsonify(result)
+
+    return jsonify({"status": "not found"})
+
+
+# ---------------- RUN SERVER ---------------- #
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run()
