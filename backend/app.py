@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import sqlite3
-from deepface import DeepFace
+import cv2
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -11,6 +12,15 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 DB = "database.db"
+
+
+# -----------------------------
+# FACE DETECTOR
+# -----------------------------
+
+face_cascade = cv2.CascadeClassifier(
+cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
 
 # -----------------------------
@@ -37,7 +47,7 @@ def init_db():
         name TEXT,
         age INTEGER,
         place TEXT,
-        photo TEXT
+        vector BLOB
     )
     """)
 
@@ -48,10 +58,34 @@ init_db()
 
 
 # -----------------------------
+# FACE VECTOR
+# -----------------------------
+
+def get_face_vector(image_path):
+
+    img = cv2.imread(image_path)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    faces = face_cascade.detectMultiScale(gray,1.3,5)
+
+    if len(faces)==0:
+        return None
+
+    (x,y,w,h) = faces[0]
+
+    face = gray[y:y+h,x:x+w]
+
+    face = cv2.resize(face,(100,100))
+
+    return face.flatten()
+
+
+# -----------------------------
 # SIGNUP
 # -----------------------------
 
-@app.route("/signup", methods=["POST"])
+@app.route("/signup",methods=["POST"])
 def signup():
 
     data = request.json
@@ -60,8 +94,8 @@ def signup():
     cur = conn.cursor()
 
     cur.execute(
-        "INSERT INTO users(name,email,password) VALUES(?,?,?)",
-        (data["name"], data["email"], data["password"])
+    "INSERT INTO users(name,email,password) VALUES(?,?,?)",
+    (data["name"],data["email"],data["password"])
     )
 
     conn.commit()
@@ -74,7 +108,7 @@ def signup():
 # LOGIN
 # -----------------------------
 
-@app.route("/login", methods=["POST"])
+@app.route("/login",methods=["POST"])
 def login():
 
     data = request.json
@@ -83,8 +117,8 @@ def login():
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT * FROM users WHERE email=? AND password=?",
-        (data["email"], data["password"])
+    "SELECT * FROM users WHERE email=? AND password=?",
+    (data["email"],data["password"])
     )
 
     user = cur.fetchone()
@@ -101,7 +135,7 @@ def login():
 # REGISTER CHILD
 # -----------------------------
 
-@app.route("/register_child", methods=["POST"])
+@app.route("/register_child",methods=["POST"])
 def register_child():
 
     name = request.form["name"]
@@ -109,73 +143,91 @@ def register_child():
     place = request.form["place"]
     photo = request.files["photo"]
 
-    path = os.path.join(UPLOAD_FOLDER, photo.filename)
+    path = os.path.join(UPLOAD_FOLDER,photo.filename)
     photo.save(path)
+
+    vector = get_face_vector(path)
+
+    if vector is None:
+        return jsonify({"message":"No face detected"})
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
     cur.execute(
-        "INSERT INTO children(name,age,place,photo) VALUES(?,?,?,?)",
-        (name, age, place, path)
+    "INSERT INTO children(name,age,place,vector) VALUES(?,?,?,?)",
+    (name,age,place,vector.tobytes())
     )
 
     conn.commit()
     conn.close()
 
-    return jsonify({"message":"Child registered successfully"})
+    return jsonify({"message":"Child registered"})
 
 
 # -----------------------------
 # CROSS CHECK
 # -----------------------------
 
-@app.route("/crosscheck", methods=["POST"])
+@app.route("/crosscheck",methods=["POST"])
 def crosscheck():
 
     photo = request.files["photo"]
 
-    upload_path = os.path.join(UPLOAD_FOLDER, photo.filename)
-    photo.save(upload_path)
+    path = os.path.join(UPLOAD_FOLDER,photo.filename)
+    photo.save(path)
+
+    uploaded_vector = get_face_vector(path)
+
+    if uploaded_vector is None:
+        return jsonify({"status":"no face"})
+
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
-    cur.execute("SELECT name,age,place,photo FROM children")
+    cur.execute("SELECT name,age,place,vector FROM children")
+
     rows = cur.fetchall()
 
     conn.close()
 
+
     for row in rows:
 
-        db_img = row[3]
+        db_vector = np.frombuffer(row[3],dtype=np.uint8)
 
-        try:
+        distance = np.linalg.norm(uploaded_vector-db_vector)
 
-            result = DeepFace.verify(
-                img1_path=upload_path,
-                img2_path=db_img,
-                model_name="VGG-Face",
-                enforce_detection=False
-            )
+        # NORMAL MATCH
+        if distance < 2000:
 
-            if result["verified"]:
+            return jsonify({
+            "status":"found",
+            "match_type":"normal",
+            "name":row[0],
+            "age":row[1],
+            "place":row[2]
+            })
 
-                return jsonify({
-                    "status":"found",
-                    "name":row[0],
-                    "age":row[1],
-                    "place":row[2]
-                })
 
-        except:
-            pass
+        # AGE TOLERANCE MATCH
+        if distance < 3500:
+
+            return jsonify({
+            "status":"found",
+            "match_type":"age_progression",
+            "name":row[0],
+            "age":row[1],
+            "place":row[2]
+            })
+
 
     return jsonify({"status":"not found"})
 
 
 # -----------------------------
-# HEALTH CHECK (important for Render)
+# ROOT (RENDER HEALTH CHECK)
 # -----------------------------
 
 @app.route("/")
@@ -188,5 +240,7 @@ def home():
 # -----------------------------
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(os.environ.get("PORT",5000))
+
+    app.run(host="0.0.0.0",port=port)
