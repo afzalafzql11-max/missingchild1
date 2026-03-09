@@ -2,8 +2,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import sqlite3
-import cv2
-import numpy as np
 from deepface import DeepFace
 
 app = Flask(__name__)
@@ -23,6 +21,15 @@ def init_db():
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        email TEXT,
+        password TEXT
+    )
+    """)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS children(
@@ -51,15 +58,6 @@ def signup():
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        email TEXT,
-        password TEXT
-    )
-    """)
 
     cur.execute(
         "INSERT INTO users(name,email,password) VALUES(?,?,?)",
@@ -148,7 +146,6 @@ def crosscheck():
 
     conn.close()
 
-    # -------- NORMAL MATCH --------
     for row in rows:
 
         db_img = row[3]
@@ -158,7 +155,7 @@ def crosscheck():
             result = DeepFace.verify(
                 img1_path=upload_path,
                 img2_path=db_img,
-                model_name="Facenet",
+                model_name="VGG-Face",
                 enforce_detection=False
             )
 
@@ -166,7 +163,6 @@ def crosscheck():
 
                 return jsonify({
                     "status":"found",
-                    "match_type":"normal",
                     "name":row[0],
                     "age":row[1],
                     "place":row[2]
@@ -174,37 +170,17 @@ def crosscheck():
 
         except:
             pass
-
-
-    # -------- AGE PROGRESSION MATCH --------
-    for row in rows:
-
-        db_img = row[3]
-
-        try:
-
-            result = DeepFace.verify(
-                img1_path=upload_path,
-                img2_path=db_img,
-                model_name="ArcFace",
-                enforce_detection=False
-            )
-
-            if result["verified"]:
-
-                return jsonify({
-                    "status":"found",
-                    "match_type":"age_progression",
-                    "name":row[0],
-                    "age":row[1],
-                    "place":row[2]
-                })
-
-        except:
-            pass
-
 
     return jsonify({"status":"not found"})
+
+
+# -----------------------------
+# HEALTH CHECK (important for Render)
+# -----------------------------
+
+@app.route("/")
+def home():
+    return "Missing Child Detection API Running"
 
 
 # -----------------------------
@@ -212,4 +188,5 @@ def crosscheck():
 # -----------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
