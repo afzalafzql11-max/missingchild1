@@ -196,6 +196,33 @@ def register_child():
     return jsonify({"message":"Child registered"})
 
 
+# ---------------- DASHBOARD DATA ----------------
+
+@app.route("/get_children", methods=["GET"])
+def get_children():
+
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute("SELECT id,name,age,place,image_path FROM children")
+    rows = cur.fetchall()
+
+    children = []
+
+    for row in rows:
+        children.append({
+            "id": row[0],
+            "name": row[1],
+            "age": row[2],
+            "place": row[3],
+            "image": row[4]
+        })
+
+    conn.close()
+
+    return jsonify(children)
+
+
 # ---------------- CROSSCHECK ----------------
 
 @app.route("/crosscheck",methods=["POST"])
