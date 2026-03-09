@@ -1,6 +1,6 @@
 flask
-opencv-python-headless
-numpy
-pillow
-gunicorn
 flask-cors
+opencv-python-headless
+deepface
+numpy
+sqlite3
