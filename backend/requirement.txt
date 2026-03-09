@@ -1,7 +1,5 @@
 flask
-gunicorn
+face_recognition
 numpy
-opencv-python
-flask-cors
 pillow
-face-recognition
+gunicorn
