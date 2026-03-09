@@ -1,6 +1,6 @@
 flask
 flask-cors
-opencv-python-headless
 deepface
+opencv-python-headless
 numpy
-sqlite3
+gunicorn
