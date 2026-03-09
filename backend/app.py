@@ -9,23 +9,22 @@ app = Flask(__name__)
 CORS(app)
 
 UPLOAD_FOLDER = "uploads"
+DATASET = "dataset"
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(DATASET, exist_ok=True)
 
 DB = "database.db"
 
 
-# -----------------------------
-# FACE DETECTOR
-# -----------------------------
+# ---------------- FACE DETECTOR ----------------
 
 face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
 
-# -----------------------------
-# DATABASE INIT
-# -----------------------------
+# ---------------- DATABASE ----------------
 
 def init_db():
 
@@ -47,7 +46,7 @@ def init_db():
         name TEXT,
         age INTEGER,
         place TEXT,
-        vector BLOB
+        image_path TEXT
     )
     """)
 
@@ -57,68 +56,67 @@ def init_db():
 init_db()
 
 
-# -----------------------------
-# FACE VECTOR GENERATOR
-# -----------------------------
+# ---------------- FACE EXTRACT ----------------
 
-def get_face_vector(image_path):
+def extract_face(image_path):
 
     img = cv2.imread(image_path)
 
     if img is None:
         return None
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
 
     faces = face_cascade.detectMultiScale(gray,1.3,5)
 
-    if len(faces) == 0:
+    if len(faces)==0:
         return None
 
-    (x,y,w,h) = faces[0]
+    (x,y,w,h)=faces[0]
 
-    face = gray[y:y+h, x:x+w]
+    face = gray[y:y+h,x:x+w]
 
-    face = cv2.resize(face,(120,120))
+    face = cv2.resize(face,(200,200))
 
-    face = cv2.equalizeHist(face)
-
-    return face.flatten()
+    return face
 
 
-# -----------------------------
-# REVERSE AGE PROGRESSION
-# -----------------------------
+# ---------------- TRAIN MODEL ----------------
 
-def reverse_age_progression(vector):
+def train_model():
 
-    face = vector.reshape(120,120).astype("uint8")
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
 
-    versions = []
+    faces = []
+    labels = []
 
-    # smoother skin
-    smooth = cv2.GaussianBlur(face,(7,7),0)
-    versions.append(smooth.flatten())
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-    # brightness change
-    bright = cv2.convertScaleAbs(face,alpha=1.2,beta=20)
-    versions.append(bright.flatten())
+    cur.execute("SELECT id,image_path FROM children")
+    rows = cur.fetchall()
 
-    # histogram equalization
-    hist = cv2.equalizeHist(face)
-    versions.append(hist.flatten())
+    conn.close()
 
-    # sharpening
-    kernel = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
-    sharp = cv2.filter2D(face,-1,kernel)
-    versions.append(sharp.flatten())
+    for row in rows:
 
-    return versions
+        img = cv2.imread(row[1],0)
+
+        if img is None:
+            continue
+
+        faces.append(img)
+        labels.append(row[0])
+
+    if len(faces)==0:
+        return None
+
+    recognizer.train(faces,np.array(labels))
+
+    return recognizer
 
 
-# -----------------------------
-# SIGNUP
-# -----------------------------
+# ---------------- SIGNUP ----------------
 
 @app.route("/signup",methods=["POST"])
 def signup():
@@ -139,9 +137,7 @@ def signup():
     return jsonify({"message":"Account created"})
 
 
-# -----------------------------
-# LOGIN
-# -----------------------------
+# ---------------- LOGIN ----------------
 
 @app.route("/login",methods=["POST"])
 def login():
@@ -166,9 +162,7 @@ def login():
         return jsonify({"status":"fail"})
 
 
-# -----------------------------
-# REGISTER CHILD
-# -----------------------------
+# ---------------- REGISTER CHILD ----------------
 
 @app.route("/register_child",methods=["POST"])
 def register_child():
@@ -178,20 +172,22 @@ def register_child():
     place = request.form["place"]
     photo = request.files["photo"]
 
-    path = os.path.join(UPLOAD_FOLDER,photo.filename)
+    path = os.path.join(DATASET,photo.filename)
     photo.save(path)
 
-    vector = get_face_vector(path)
+    face = extract_face(path)
 
-    if vector is None:
+    if face is None:
         return jsonify({"message":"No face detected"})
+
+    cv2.imwrite(path,face)
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
     cur.execute(
-    "INSERT INTO children(name,age,place,vector) VALUES(?,?,?,?)",
-    (name,age,place,vector.tobytes())
+    "INSERT INTO children(name,age,place,image_path) VALUES(?,?,?,?)",
+    (name,age,place,path)
     )
 
     conn.commit()
@@ -200,9 +196,7 @@ def register_child():
     return jsonify({"message":"Child registered"})
 
 
-# -----------------------------
-# CROSS CHECK
-# -----------------------------
+# ---------------- CROSSCHECK ----------------
 
 @app.route("/crosscheck",methods=["POST"])
 def crosscheck():
@@ -212,101 +206,67 @@ def crosscheck():
     path = os.path.join(UPLOAD_FOLDER,photo.filename)
     photo.save(path)
 
-    uploaded_vector = get_face_vector(path)
+    face = extract_face(path)
 
-    if uploaded_vector is None:
+    if face is None:
         return jsonify({"status":"no face"})
+
+    recognizer = train_model()
+
+    if recognizer is None:
+        return jsonify({"status":"database empty"})
+
+    label,confidence = recognizer.predict(face)
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
-    cur.execute("SELECT name,age,place,vector FROM children")
-
-    rows = cur.fetchall()
+    cur.execute("SELECT name,age,place FROM children WHERE id=?",(label,))
+    row = cur.fetchone()
 
     conn.close()
 
 
-    # ---------------- NORMAL MATCH ----------------
+    # ---------------- MATCH RULES ----------------
 
-    for row in rows:
+    if confidence < 60:
 
-        db_vector = np.frombuffer(row[3],dtype=np.uint8)
-
-        distance = np.linalg.norm(uploaded_vector-db_vector)
-
-        if distance < 2000:
-
-            return jsonify({
-            "status":"found",
-            "match_type":"normal",
-            "name":row[0],
-            "age":row[1],
-            "place":row[2]
-            })
+        return jsonify({
+        "status":"found",
+        "match_type":"normal",
+        "name":row[0],
+        "age":row[1],
+        "place":row[2]
+        })
 
 
-    # ---------------- AGE TOLERANCE MATCH ----------------
+    elif confidence < 80:
 
-    for row in rows:
-
-        db_vector = np.frombuffer(row[3],dtype=np.uint8)
-
-        distance = np.linalg.norm(uploaded_vector-db_vector)
-
-        if distance < 3500:
-
-            return jsonify({
-            "status":"found",
-            "match_type":"age_progression",
-            "name":row[0],
-            "age":row[1],
-            "place":row[2]
-            })
+        return jsonify({
+        "status":"found",
+        "match_type":"age_progression",
+        "name":row[0],
+        "age":row[1],
+        "place":row[2]
+        })
 
 
-    # ---------------- REVERSE AGE PROGRESSION ----------------
+    else:
 
-    aged_versions = reverse_age_progression(uploaded_vector)
-
-    for aged_vector in aged_versions:
-
-        for row in rows:
-
-            db_vector = np.frombuffer(row[3],dtype=np.uint8)
-
-            distance = np.linalg.norm(aged_vector-db_vector)
-
-            if distance < 4000:
-
-                return jsonify({
-                "status":"found",
-                "match_type":"reverse_age_progression",
-                "name":row[0],
-                "age":row[1],
-                "place":row[2]
-                })
+        return jsonify({"status":"not found"})
 
 
-    # ---------------- NOT FOUND ----------------
-
-    return jsonify({"status":"not found"})
-
-
-# -----------------------------
-# ROOT (RENDER HEALTH CHECK)
-# -----------------------------
+# ---------------- ROOT ----------------
 
 @app.route("/")
 def home():
+
     return "Missing Child Detection API Running"
 
 
-# -----------------------------
-# RUN SERVER
-# -----------------------------
+# ---------------- RUN ----------------
 
-if __name__ == "__main__":
+if __name__=="__main__":
 
     port = int(os.environ.get("PORT",5000))
 
